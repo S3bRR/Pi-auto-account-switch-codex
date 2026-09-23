@@ -5,7 +5,6 @@
   "license": "MIT",
   "type": "module",
   "scripts": {
-    "test": "tsx --test tests/*.test.ts",
     "typecheck": "tsc -p tsconfig.json"
   },
   "pi": {
@@ -39,7 +38,6 @@
     "@earendil-works/pi-coding-agent": "0.87.0",
     "@types/node": "^22.20.4",
     "@types/proper-lockfile": "^4.1.4",
-    "tsx": "^4.23.15",
     "typescript": "~5.9.3"
   },
   "dependencies": {

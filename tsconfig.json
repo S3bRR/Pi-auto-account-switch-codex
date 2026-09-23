@@ -8,5 +8,5 @@
     "noEmit": true,
     "types": ["node"]
   },
-  "include": ["pi/**/*.ts", "tests/**/*.ts"]
+  "include": ["pi/**/*.ts"]
 }

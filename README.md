@@ -4,7 +4,7 @@
 
 Use multiple **already authenticated** ChatGPT Codex accounts in [Pi](https://pi.dev) without losing your current task when one reaches a confirmed usage limit. You choose the participating accounts and their priority; Pi continues in the same session on the next eligible account. No API-key/billing fallback, model downgrade, account creation, or dashboard scraping.
 
-Built and tested against **@earendil-works/pi-coding-agent 0.87.0** (Node 22+). Other Pi versions and live OpenAI error variants have not been verified; see [Limitations and verification](#limitations-and-verification).
+Built for **@earendil-works/pi-coding-agent 0.87.0** (Node 22+). Other Pi versions and live OpenAI error variants have not been verified; see [Limitations](#limitations).
 
 ## Install
 
@@ -49,12 +49,6 @@ On an eligible quota error at `turn_end`, the extension selects the next availab
 
 If all included accounts are unavailable, the TUI warns with per-account reasons and stops; the session is resumable. In print mode the per-account summary is written to stderr alongside Pi's last provider error; inspect `/accounts status` when resuming interactively. Compaction, branch summarization, and standalone auth commands use Pi's own model/auth paths, but **quota continuation in those paths is not implemented or verified**. An uncertain interrupted side effect requires human reconciliation; exactly-once execution cannot be promised for arbitrary external tools.
 
-## Limitations and verification
+## Limitations
 
-```bash
-npm ci
-npm run typecheck
-npm test
-```
-
-`npm test` uses synthetic credentials and a test-only mock provider in **real Pi 0.87 sessions**, not paid usage. It checks B → B (tool action, then quota) → A continuation, B → A → C after consecutive quotas, exactly one completed tool effect, the same session/model, a three-account bounded exhaustion pass, and a transient throttling case that retries on B without switching, and manual mode with automation off. Unit tests cover metadata/order and conservative error classification; a storage test checks corrupt auth files remain intact; a mocked-UI test covers `/accounts` selection, automatic enablement, interactive setup/restart/cancel, and noninteractive mode. A real human-operated TUI, real OpenAI quota responses/WebSockets, real token rotation, multi-process refresh races, and compaction recovery have **not** been exercised against live services. Do not assume those paths are fully validated by the mock.
+The extension was validated locally with synthetic Codex quota responses in Pi 0.87 before publishing this product repository; automated test sources are not included. To check the TypeScript source in a development checkout, run `npm ci && npm run typecheck`. A real human-operated TUI, real OpenAI quota responses/WebSockets, real token rotation, multi-process refresh races, subagent continuation, and compaction recovery have **not** been verified against live services. Automatic failover cannot be guaranteed for every error or subagent session.
