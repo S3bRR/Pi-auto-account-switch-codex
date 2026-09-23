@@ -1,0 +1,7 @@
+node_modules/
+*.tgz
+# Never commit local Pi credentials or account-selection metadata.
+auth.json
+codex-account.json
+sessions/
+*.tmp

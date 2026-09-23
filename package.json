@@ -1,0 +1,49 @@
+{
+  "name": "pi-cli-codex-account-switcher",
+  "version": "1.0.0",
+  "description": "Switch between multiple ChatGPT Plus/Pro OAuth accounts in Pi CLI",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "test": "tsx --test tests/*.test.ts",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "pi": {
+    "extensions": [
+      "./pi/codex-accounts.ts"
+    ]
+  },
+  "files": [
+    "pi",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/S3bRR/Pi-CLI-codex-account-switcher.git"
+  },
+  "keywords": [
+    "pi",
+    "pi-cli",
+    "pi-coding-agent",
+    "chatgpt",
+    "oauth",
+    "codex"
+  ],
+  "peerDependencies": { "@earendil-works/pi-coding-agent": "*" },
+  "devDependencies": {
+    "@earendil-works/pi-ai": "0.87.0",
+    "@earendil-works/pi-coding-agent": "0.87.0",
+    "@types/node": "^22.20.4",
+    "@types/proper-lockfile": "^4.1.4",
+    "tsx": "^4.23.15",
+    "typescript": "~5.9.3"
+  },
+  "dependencies": {
+    "proper-lockfile": "^4.1.2"
+  },
+  "bundledDependencies": ["proper-lockfile"]
+}
