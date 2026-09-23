@@ -22,7 +22,7 @@ For a development checkout instead, run `npm ci` in the cloned repository and `p
 
 1. Automatic mode defaults to **ON**. Before any order is saved the status says `auto ON | set order with /accounts`: **no account participates yet**. Run **`/accounts`**, choose which accounts participate and their priority (for example **B → A → C**), then **Save order** to activate failover. No separate `/accounts auto on` is needed. Cancel keeps the previous settings. Select the account you want to use from the menu. Subsequent `/accounts` calls open the picker directly; choose **Edit priority order** there to change it. Missing accounts are removed from the order only when you save.
 2. On a fresh process launch, Pi selects the first eligible account in the saved order. Subsequent interactive launches offer **Use saved order** or **Edit order**; print/JSON/RPC modes use saved settings without prompting. Within a session, a manual selection stays active until it reaches a confirmed quota limit, then Pi advances to the next eligible included account.
-3. `/accounts status` shows the live account, order, and known blocks. `/accounts auto off` explicitly disables automatic switching without deleting the order; saving a nonempty order again re-enables it.
+3. `/accounts status` shows the live account, order, and known blocks. The persistent Codex status line shows only the first three characters of the current account label (before `@` for emails); the picker and detailed priority list retain full labels so accounts remain distinguishable. `/accounts auto off` explicitly disables automatic switching without deleting the order; saving a nonempty order again re-enables it.
 
 | Command | Action |
 |---|---|

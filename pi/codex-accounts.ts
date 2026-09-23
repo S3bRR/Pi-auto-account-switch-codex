@@ -519,7 +519,9 @@ function statusText(live: Live, accounts: CodexAccount[]): string {
 	const position = live.preferences.order.length
 		? `${Math.max(0, live.preferences.order.indexOf(live.activeId ?? "") + 1)}/${live.preferences.order.length}`
 		: "set order with /accounts";
-	return `Codex: ${byId.get(live.activeId ?? "")?.label ?? live.activeId ?? "none"} | auto ${live.preferences.auto ? "ON" : "OFF"} | ${position}`;
+	const label = byId.get(live.activeId ?? "")?.label ?? live.activeId;
+	const shortLabel = label ? Array.from(label.split("@")[0]).slice(0, 3).join("") : "none";
+	return `Codex: ${shortLabel} | auto ${live.preferences.auto ? "ON" : "OFF"} | ${position}`;
 }
 
 function showStatus(ctx: ExtensionContext, live: Live, accounts: CodexAccount[]): void {

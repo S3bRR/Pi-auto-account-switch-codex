@@ -6,8 +6,8 @@ import { join } from "node:path";
 import register from "../pi/codex-accounts.js";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
-function jwt(id: string): string { return `e30.${Buffer.from(JSON.stringify({ chatgpt_account_id: id })).toString("base64url")}.sig`; }
-function auth(id: string) { return { type: "oauth", access: jwt(id), refresh: "synthetic", expires: Date.now() + 86400000, accountId: id }; }
+function jwt(id: string, email?: string): string { return `e30.${Buffer.from(JSON.stringify({ chatgpt_account_id: id, ...(email ? { email } : {}) })).toString("base64url")}.sig`; }
+function auth(id: string, email?: string) { return { type: "oauth", access: jwt(id, email), refresh: "synthetic", expires: Date.now() + 86400000, accountId: id }; }
 
 function harness(mode: "tui" | "print", select: (title: string, options: string[]) => string | undefined) {
 	const handlers = new Map<string, (event: any, ctx: ExtensionContext) => unknown>();
@@ -94,7 +94,7 @@ test("/accounts first-time picker configures priority and auto without a separat
 	const oldAuth = process.env.PI_AUTH_FILE, oldSelection = process.env.PI_CODEX_SELECTION_FILE;
 	try {
 		process.env.PI_AUTH_FILE = join(dir, "auth.json"); process.env.PI_CODEX_SELECTION_FILE = join(dir, "selection.json");
-		writeFileSync(process.env.PI_AUTH_FILE, JSON.stringify({ "openai-codex": auth("A"), "openai-codex/A": auth("A"), "openai-codex/B": auth("B") }));
+		writeFileSync(process.env.PI_AUTH_FILE, JSON.stringify({ "openai-codex": auth("A", "alexandra@example.test"), "openai-codex/A": auth("A", "alexandra@example.test"), "openai-codex/B": auth("B") }));
 		// Fresh extension install: credentials exist, but there is no selection file yet.
 		const order = ["B", "A"];
 		const picker = harness("tui", (title, options) => {
@@ -106,7 +106,7 @@ test("/accounts first-time picker configures priority and auto without a separat
 			throw new Error(`Unexpected prompt: ${title}`);
 		});
 		await picker.handlers.get("session_start")!({ reason: "resume" }, picker.ctx);
-		equal(picker.status.includes("auto ON | set order with /accounts"), true, "fresh installs default to ON but do not silently include accounts");
+		equal(picker.status, "Codex: ale | auto ON | set order with /accounts", "the footer masks the email and shows that the order still needs setup");
 		await picker.commands.get("accounts")!("", picker.ctx);
 		deepStrictEqual(JSON.parse(readFileSync(process.env.PI_CODEX_SELECTION_FILE, "utf8")), { version: 1, accountId: "B", order: ["B", "A"], auto: true });
 		equal(picker.confirmations, 0);
