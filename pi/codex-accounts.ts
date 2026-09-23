@@ -516,7 +516,10 @@ async function startFirst(live: Live, accounts: CodexAccount[]): Promise<void> {
 
 function statusText(live: Live, accounts: CodexAccount[]): string {
 	const byId = new Map(accounts.map((a) => [a.id, a]));
-	return `Codex: ${byId.get(live.activeId ?? "")?.label ?? live.activeId ?? "none"} | auto ${live.preferences.auto ? "ON" : "OFF"} | ${Math.max(0, live.preferences.order.indexOf(live.activeId ?? "") + 1)}/${live.preferences.order.length}`;
+	const position = live.preferences.order.length
+		? `${Math.max(0, live.preferences.order.indexOf(live.activeId ?? "") + 1)}/${live.preferences.order.length}`
+		: "set order with /accounts";
+	return `Codex: ${byId.get(live.activeId ?? "")?.label ?? live.activeId ?? "none"} | auto ${live.preferences.auto ? "ON" : "OFF"} | ${position}`;
 }
 
 function showStatus(ctx: ExtensionContext, live: Live, accounts: CodexAccount[]): void {
@@ -532,7 +535,7 @@ async function editOrder(ctx: ExtensionContext, live: Live): Promise<boolean> {
 		const choice = await ctx.ui.select("Codex priority (select an account to include, exclude or move)", [...labels, "Save order", "Cancel"]);
 		if (!choice || choice === "Cancel") return false;
 		if (choice === "Save order") {
-			if (live.preferences.auto && !draft.length) { ctx.ui.notify("Disable automatic mode before saving an empty order", "warning"); continue; }
+			if (live.preferences.auto && !draft.length) { ctx.ui.notify("Include at least one account in the order, or Cancel", "warning"); continue; }
 			live.preferences = await updatePreferences({ order: draft, ...(draft.length ? { auto: true } : {}) });
 			live.generation++; live.pending = undefined; live.attempted.clear();
 			showStatus(ctx, live, accounts);
@@ -787,6 +790,9 @@ export default function registerCodexAccounts(pi: ExtensionAPI): void {
 			if (choice === "Edit order") {
 				const wasUnconfigured = !live.preferences.order.length;
 				if (await editOrder(ctx, live) && wasUnconfigured && live.preferences.auto) await startFirst(live, accounts);
+				showStatus(ctx, live, accounts);
+			} else if (choice === "Keep manual mode") {
+				live.preferences = await updatePreferences({ auto: false });
 				showStatus(ctx, live, accounts);
 			}
 		} catch (cause) { ctx.ui.notify(`Codex setup failed: ${cause instanceof Error ? cause.message : String(cause)}`, "error"); }

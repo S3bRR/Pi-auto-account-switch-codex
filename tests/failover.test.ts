@@ -1,9 +1,11 @@
 import { test } from "node:test";
 import { deepStrictEqual, equal, throws } from "node:assert/strict";
-import { candidates, parsePreferences, quotaError } from "../pi/failover.js";
+import { candidates, defaults, parsePreferences, quotaError } from "../pi/failover.js";
 
 test("legacy metadata preserves selection; order is stable and explicit", () => {
-	deepStrictEqual(parsePreferences({ accountId: "A" }), { version: 1, accountId: "A", order: [], auto: false });
+	deepStrictEqual(defaults(), { version: 1, order: [], auto: true });
+	deepStrictEqual(parsePreferences({ accountId: "A" }), { version: 1, accountId: "A", order: [], auto: true });
+	deepStrictEqual(parsePreferences({ version: 1, order: ["A"], auto: false }).auto, false);
 	deepStrictEqual(parsePreferences({ version: 1, accountId: "B", order: ["B", "A", "C"], auto: true }).order, ["B", "A", "C"]);
 	throws(() => parsePreferences({ version: 1, order: ["A", "A"] }));
 	throws(() => parsePreferences({ version: 2, order: [] }));

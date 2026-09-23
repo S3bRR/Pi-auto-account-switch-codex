@@ -106,6 +106,7 @@ test("/accounts first-time picker configures priority and auto without a separat
 			throw new Error(`Unexpected prompt: ${title}`);
 		});
 		await picker.handlers.get("session_start")!({ reason: "resume" }, picker.ctx);
+		equal(picker.status.includes("auto ON | set order with /accounts"), true, "fresh installs default to ON but do not silently include accounts");
 		await picker.commands.get("accounts")!("", picker.ctx);
 		deepStrictEqual(JSON.parse(readFileSync(process.env.PI_CODEX_SELECTION_FILE, "utf8")), { version: 1, accountId: "B", order: ["B", "A"], auto: true });
 		equal(picker.confirmations, 0);
