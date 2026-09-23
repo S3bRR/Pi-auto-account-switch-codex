@@ -95,7 +95,7 @@ test("/accounts first-time picker configures priority and auto without a separat
 	try {
 		process.env.PI_AUTH_FILE = join(dir, "auth.json"); process.env.PI_CODEX_SELECTION_FILE = join(dir, "selection.json");
 		writeFileSync(process.env.PI_AUTH_FILE, JSON.stringify({ "openai-codex": auth("A"), "openai-codex/A": auth("A"), "openai-codex/B": auth("B") }));
-		writeFileSync(process.env.PI_CODEX_SELECTION_FILE, JSON.stringify({ accountId: "A" }));
+		// Fresh extension install: credentials exist, but there is no selection file yet.
 		const order = ["B", "A"];
 		const picker = harness("tui", (title, options) => {
 			if (title.startsWith("Codex priority")) {

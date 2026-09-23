@@ -18,10 +18,11 @@ For a development checkout instead, run `npm ci` in the cloned repository and `p
 
 ## Set up and use
 
-1. `/login` with a Codex account or `/connect` (or `/connect device`), once for each account. `/accounts import` copies existing OpenCode accounts without enabling them.
-2. Run **`/accounts`**. The first time, choose which accounts participate and their priority (for example **B → A → C**), then **Save order**. Saving a nonempty order turns automatic failover **ON**; no separate `/accounts auto on` is needed. Cancel keeps the previous settings. Select the account you want to use from the menu. Subsequent `/accounts` calls open the picker directly; choose **Edit priority order** there to change it. Missing accounts are removed from the order only when you save.
-3. On a fresh process launch, Pi selects the first eligible account in the saved order. Subsequent interactive launches offer **Use saved order** or **Edit order**; print/JSON/RPC modes use saved settings without prompting. Within a session, a manual selection stays active until it reaches a confirmed quota limit, then Pi advances to the next eligible included account.
-4. `/accounts status` shows the live account, order, and known blocks. `/accounts auto off` explicitly disables automatic switching without deleting the order; saving a nonempty order again re-enables it.
+**Already connected? No need to sign in again.** `/accounts` automatically discovers OAuth credentials already saved in Pi's `auth.json` (`openai-codex` and `openai-codex/<accountId>`), including accounts from an earlier installation of this extension. Reinstalling the package does not remove those credentials. If an account is saved **only** in OpenCode, use `/accounts import` to copy it without logging in again. Accounts that are not stored in Pi or OpenCode cannot be discovered from a browser login; add those once with `/login` or `/connect [browser|device]`.
+
+1. Run **`/accounts`**. The first time, choose which accounts participate and their priority (for example **B → A → C**), then **Save order**. Saving a nonempty order turns automatic failover **ON**; no separate `/accounts auto on` is needed. Cancel keeps the previous settings. Select the account you want to use from the menu. Subsequent `/accounts` calls open the picker directly; choose **Edit priority order** there to change it. Missing accounts are removed from the order only when you save.
+2. On a fresh process launch, Pi selects the first eligible account in the saved order. Subsequent interactive launches offer **Use saved order** or **Edit order**; print/JSON/RPC modes use saved settings without prompting. Within a session, a manual selection stays active until it reaches a confirmed quota limit, then Pi advances to the next eligible included account.
+3. `/accounts status` shows the live account, order, and known blocks. `/accounts auto off` explicitly disables automatic switching without deleting the order; saving a nonempty order again re-enables it.
 
 | Command | Action |
 |---|---|
