@@ -9,7 +9,7 @@ Built and tested against **@earendil-works/pi-coding-agent 0.87.0** (Node 22+). 
 ## Install
 
 ```bash
-pi install git:github.com/S3bRR/Pi-CLI-codex-account-switcher
+pi install git:github.com/S3bRR/Pi-auto-account-switch-codex
 ```
 
 This installs the package globally for normal Pi launches. If Pi is already open, run **`/reload` once** to load it; no reload is needed between account switches. To update after a new release, run `pi update --extensions` followed by `/reload` in an already-open Pi session. Do not install both this Git package and a separate local checkout at the same time; they register the same commands.
