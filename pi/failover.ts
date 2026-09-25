@@ -13,14 +13,20 @@ export function parsePreferences(value: unknown): Preferences {
 	return { version: 1, ...(row.accountId ? { accountId: row.accountId as string } : {}), order: (row.order as string[] | undefined) ?? [], auto: (row.auto as boolean | undefined) ?? true };
 }
 
-/** Only unambiguous subscription exhaustion is actionable. Pi 0.87 normalizes Codex errors to text. */
+/** Only subscription exhaustion is actionable. Pi may expose a code or normalized text. */
 export function quotaError(message: string | undefined, code?: string): boolean {
 	if (!message) return false;
-	// Pi 0.87's Codex SSE parser uses the SAME friendly "usage limit" message for
-	// both usage_limit_reached and rate_limit_exceeded. Never trust that text alone.
+	const text = message.trim();
+	if (/insufficient_quota|billing|context (?:window|length)/i.test(text)) return false;
+	if (/^(?:Codex error:\s*)?The usage limit has been reached\.?$/i.test(text)) return true;
+	const normalized = /^You have hit your ChatGPT usage limit \((?:plus|pro|free|team|business|enterprise) plan\)\. Try again in ~([0-9]+) min\.$/i.exec(text);
+	// Pi 0.87.1 can normalize both quota and rate errors to the same sentence.
+	// A plan-scoped wait of ten minutes or more is treated as exhaustion; short
+	// request throttles still stay on the current account.
+	if (normalized !== null && Number(normalized[1]) >= 10) return true;
 	if (code) return code === "usage_limit_reached";
-	return /\busage_limit_reached\b|\b(?:GoUsageLimitError|FreeUsageLimitError)\b|\bChatGPT (?:weekly|monthly) usage limit reached\b/i.test(message)
-		&& !/rate_limit_exceeded|requests? per (?:minute|second)|too many requests|insufficient_quota|billing|context (?:window|length)/i.test(message);
+	if (/rate_limit_exceeded|requests? per (?:minute|second)|too many requests/i.test(text)) return false;
+	return /\busage_limit_reached\b|\b(?:GoUsageLimitError|FreeUsageLimitError)\b|\bChatGPT (?:weekly|monthly) usage limit reached\b/i.test(text);
 }
 
 /** Manual selection outside the pool begins at the first priority entry. */

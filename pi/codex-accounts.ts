@@ -763,8 +763,8 @@ export default function registerCodexAccounts(pi: ExtensionAPI): void {
 					} },
 					streamSimple: (model, context, options) => {
 						live.lastCode = undefined; live.lastResetAt = undefined;
-						// Inspect only failed SSE response codes; never log/store response bodies.
-						// WebSocket errors without an explicit code remain unclassified.
+						// Capture structured SSE codes without logging/storing response bodies.
+						// WebSocket quota failures are classified later from Pi's bounded final text.
 						return native.streamSimple(model, context, { ...options, fetch: async (input, init) => {
 							const response = await (options?.fetch ?? fetch)(input, init);
 							live.lastCode = undefined; live.lastResetAt = undefined;
