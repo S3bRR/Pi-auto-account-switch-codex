@@ -639,13 +639,14 @@ async function handleAccounts(ctx: ExtensionContext, args: string, live: Live): 
 		}
 		const added = await authTransaction(async (all) => {
 			let count = 0;
+			let changed = false;
 			for (const account of incoming) {
 				const key = `${ACCOUNT_PREFIX}${account.id}`;
 				const existing = credential(all[key]);
-				if (!existing || account.auth.expires > existing.expires) { all[key] = account.auth; count++; }
+				if (!existing || account.auth.expires > existing.expires) { all[key] = account.auth; count++; changed = true; }
 			}
-			if (!credential(all[PI_CANONICAL]) && incoming[0]) all[PI_CANONICAL] = incoming[0]!.auth;
-			return { value: count, changed: count > 0 };
+			if (!credential(all[PI_CANONICAL]) && incoming[0]) { all[PI_CANONICAL] = incoming[0].auth; changed = true; }
+			return { value: count, changed };
 		});
 		reply(ctx, `Import complete: ${added} account(s) copied from OpenCode (existing Pi entries preserved unless the import is newer).\n\nUse /accounts to list, /accounts <id|email> to switch.`);
 		return;
@@ -763,9 +764,9 @@ export default function registerCodexAccounts(pi: ExtensionAPI): void {
 					} },
 					streamSimple: (model, context, options) => {
 						live.lastCode = undefined; live.lastResetAt = undefined;
-						// Capture structured SSE codes without logging/storing response bodies.
-						// WebSocket quota failures are classified later from Pi's bounded final text.
-						return native.streamSimple(model, context, { ...options, fetch: async (input, init) => {
+						// Force SSE while failover is active: Pi exposes HTTP quota bodies here,
+						// whereas its WebSocket transport does not surface the error code.
+						return native.streamSimple(model, context, { ...options, transport: "sse", fetch: async (input, init) => {
 							const response = await (options?.fetch ?? fetch)(input, init);
 							live.lastCode = undefined; live.lastResetAt = undefined;
 							if (response.status === 429) {
@@ -775,7 +776,8 @@ export default function registerCodexAccounts(pi: ExtensionAPI): void {
 										const error = (JSON.parse(text) as { error?: { code?: unknown; type?: unknown; resets_at?: unknown } }).error;
 										const code = error?.code ?? error?.type;
 										if (typeof code === "string") live.lastCode = code;
-										if (typeof error?.resets_at === "number" && Number.isFinite(error.resets_at) && error.resets_at * 1000 > Date.now()) live.lastResetAt = error.resets_at * 1000;
+										const resetSeconds = typeof error?.resets_at === "number" || typeof error?.resets_at === "string" ? Number(error.resets_at) : NaN;
+										if (Number.isFinite(resetSeconds) && resetSeconds * 1000 > Date.now()) live.lastResetAt = resetSeconds * 1000;
 									}
 								} catch { /* Unknown error body: fail closed, not fail over. */ }
 							}
@@ -786,22 +788,19 @@ export default function registerCodexAccounts(pi: ExtensionAPI): void {
 				providerInstalled = true;
 			}
 			showStatus(ctx, live, accounts);
-			if (event.reason !== "startup" || ctx.mode !== "tui" || !accounts.length) return;
-			ctx.ui.notify("Automatic failover shares this session context with each selected ChatGPT account/workspace.", "info");
-			const choice = await ctx.ui.select(live.preferences.order.length ? "Codex accounts: saved order" : "Set up Codex account order", live.preferences.order.length ? ["Use saved order", "Edit order"] : ["Edit order", "Keep manual mode"]);
-			if (choice === "Edit order") {
-				const wasUnconfigured = !live.preferences.order.length;
-				if (await editOrder(ctx, live) && wasUnconfigured && live.preferences.auto) await startFirst(live, accounts);
-				showStatus(ctx, live, accounts);
-			} else if (choice === "Keep manual mode") {
-				live.preferences = await updatePreferences({ auto: false });
-				showStatus(ctx, live, accounts);
+			if (event.reason === "startup" && ctx.mode === "tui" && accounts.length && !live.preferences.order.length) {
+				ctx.ui.notify("Codex accounts detected. Run /accounts once to choose the automatic failover order.", "info");
 			}
 		} catch (cause) { ctx.ui.notify(`Codex setup failed: ${cause instanceof Error ? cause.message : String(cause)}`, "error"); }
 	});
 	pi.on("session_shutdown", (_event, ctx) => {
 		live.generation++; live.pending = undefined; live.attempted.clear(); live.seen.clear();
 		if (ctx.mode === "tui") ctx.ui.setStatus("codex-accounts", undefined);
+	});
+	// A new user task gets a fresh bounded failover episode. Automatic continuations
+	// do not emit before_agent_start, so exhausted accounts remain skipped mid-task.
+	pi.on("before_agent_start", () => {
+		live.pending = undefined; live.blocked.clear(); live.attempted.clear(); live.seen.clear();
 	});
 	pi.on("turn_end", async (event, ctx) => {
 		if (!live.preferences.auto || !live.activeId || !ctx.model || ctx.model.provider !== PI_CANONICAL || event.message.role !== "assistant" || event.message.provider !== PI_CANONICAL || event.message.stopReason !== "error" || !quotaError(event.message.errorMessage, live.lastCode) || live.seen.has(event.messageEntryId) || live.busy) return;
@@ -831,6 +830,10 @@ export default function registerCodexAccounts(pi: ExtensionAPI): void {
 			const summary = `Codex accounts unavailable: ${live.preferences.order.map((id) => `${known.get(id)?.label ?? id}: ${live.blocked.get(id) ?? "not attempted"}`).join("; ")}. Session preserved.`;
 			if (ctx.mode === "print") process.stderr.write(`${summary}\n`);
 			else ctx.ui.notify(summary, "warning");
+		} catch (cause) {
+			const message = `Codex failover failed safely: ${cause instanceof Error ? cause.message : String(cause)}. Session preserved.`;
+			if (ctx.mode === "print") process.stderr.write(`${message}\n`);
+			else ctx.ui.notify(message, "error");
 		} finally { live.busy = false; }
 	});
 	pi.on("agent_before_settle", (event) => {

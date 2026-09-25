@@ -1,7 +1,7 @@
 {
   "name": "pi-cli-codex-account-switcher",
-  "version": "1.0.0",
-  "description": "Switch between multiple ChatGPT Plus/Pro OAuth accounts in Pi CLI",
+  "version": "1.1.0",
+  "description": "Ordered automatic Codex account failover for Pi",
   "license": "MIT",
   "type": "module",
   "scripts": {
@@ -32,7 +32,9 @@
     "oauth",
     "codex"
   ],
-  "peerDependencies": { "@earendil-works/pi-coding-agent": "*" },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
   "devDependencies": {
     "@earendil-works/pi-ai": "0.87.1",
     "@earendil-works/pi-coding-agent": "0.87.1",
@@ -43,5 +45,7 @@
   "dependencies": {
     "proper-lockfile": "^4.1.2"
   },
-  "bundledDependencies": ["proper-lockfile"]
+  "bundledDependencies": [
+    "proper-lockfile"
+  ]
 }
