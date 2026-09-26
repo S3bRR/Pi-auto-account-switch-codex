@@ -482,7 +482,8 @@ function reply(ctx: ExtensionContext, text: string): void {
 // Local session state and interactive controls
 // ---------------------------------------------------------------------------
 
-type Live = { activeId?: string; preferences: Preferences; blocked: Map<string, string>; attempted: Set<string>; seen: Set<string>; pending?: string; lastCode?: string; lastResetAt?: number; generation: number; busy: boolean; switchChain: Promise<void> };
+type Live = { activeId?: string; activeAuth?: OAuthCredential; preferences: Preferences; blocked: Map<string, string>; attempted: Set<string>; seen: Set<string>; pending?: string; generation: number; busy: boolean; switchChain: Promise<void> };
+type RequestQuota = { code?: string; resetAt?: number };
 
 async function switchLive(live: Live, id: string, generation: number): Promise<boolean> {
 	const previous = live.switchChain;
@@ -491,9 +492,10 @@ async function switchLive(live: Live, id: string, generation: number): Promise<b
 	await previous;
 	try {
 		if (live.generation !== generation) return false;
-		await selectAccount(id);
+		const auth = await selectAccount(id);
 		if (live.generation !== generation) return false;
 		live.activeId = id;
+		live.activeAuth = auth;
 		await writeSelection(id);
 		return true;
 	} finally { unlock(); }
@@ -735,6 +737,7 @@ async function handleConnect(ctx: ExtensionContext, args: string, live: Live): P
 
 export default function registerCodexAccounts(pi: ExtensionAPI): void {
 	const live: Live = { preferences: defaults(), blocked: new Map(), attempted: new Set(), seen: new Set(), generation: 0, busy: false, switchChain: Promise.resolve() };
+	const quotaByMessage = new WeakMap<object, RequestQuota>();
 	let providerInstalled = false;
 	pi.on("session_start", async (event, ctx) => {
 		try {
@@ -759,30 +762,44 @@ export default function registerCodexAccounts(pi: ExtensionAPI): void {
 						toAuth: async (current) => {
 							if (!live.activeId) return oauth.toAuth(current);
 							const selected = await selectAccount(live.activeId, false);
+							live.activeAuth = selected;
 							return oauth.toAuth(selected);
 						},
 					} },
 					streamSimple: (model, context, options) => {
-						live.lastCode = undefined; live.lastResetAt = undefined;
-						// Force SSE while failover is active: Pi exposes HTTP quota bodies here,
-						// whereas its WebSocket transport does not surface the error code.
-						return native.streamSimple(model, context, { ...options, transport: "sse", fetch: async (input, init) => {
+						const selected = live.activeAuth;
+						const requestAccountId = selected && accountId(selected);
+						if (live.activeId && requestAccountId !== live.activeId) throw new Error("Selected Codex credential is not bound to the active account");
+						const apiKey = selected?.access ?? options?.apiKey;
+						if (live.activeId && identity(apiKey).id !== live.activeId) throw new Error("Selected Codex bearer token has the wrong account identity");
+						const quota: RequestQuota = {};
+						// Bind the request directly to the selected token and force SSE. Relying on
+						// Pi's canonical credential can reuse a stale pre-switch auth resolution.
+						const stream = native.streamSimple(model, context, { ...options, apiKey, transport: "sse", fetch: async (input, init) => {
+							const headerAccountId = new Headers(init?.headers).get("chatgpt-account-id");
+							if (requestAccountId && headerAccountId !== requestAccountId) throw new Error("Codex request account header does not match the selected account");
 							const response = await (options?.fetch ?? fetch)(input, init);
-							live.lastCode = undefined; live.lastResetAt = undefined;
 							if (response.status === 429) {
 								try {
 									const text = await response.clone().text();
 									if (text.length <= 32_768) {
 										const error = (JSON.parse(text) as { error?: { code?: unknown; type?: unknown; resets_at?: unknown } }).error;
 										const code = error?.code ?? error?.type;
-										if (typeof code === "string") live.lastCode = code;
+										if (typeof code === "string") quota.code = code;
 										const resetSeconds = typeof error?.resets_at === "number" || typeof error?.resets_at === "string" ? Number(error.resets_at) : NaN;
-										if (Number.isFinite(resetSeconds) && resetSeconds * 1000 > Date.now()) live.lastResetAt = resetSeconds * 1000;
+										if (Number.isFinite(resetSeconds) && resetSeconds * 1000 > Date.now()) quota.resetAt = resetSeconds * 1000;
 									}
-								} catch { /* Unknown error body: fail closed, not fail over. */ }
+								} catch { /* Unknown error body: fall back to bounded final-message detection. */ }
 							}
 							return response;
 						} });
+						const originalResult = stream.result.bind(stream);
+						stream.result = async () => {
+							const message = await originalResult();
+							quotaByMessage.set(message, quota);
+							return message;
+						};
+						return stream;
 					},
 				});
 				providerInstalled = true;
@@ -794,7 +811,7 @@ export default function registerCodexAccounts(pi: ExtensionAPI): void {
 		} catch (cause) { ctx.ui.notify(`Codex setup failed: ${cause instanceof Error ? cause.message : String(cause)}`, "error"); }
 	});
 	pi.on("session_shutdown", (_event, ctx) => {
-		live.generation++; live.pending = undefined; live.attempted.clear(); live.seen.clear();
+		live.generation++; live.activeAuth = undefined; live.pending = undefined; live.attempted.clear(); live.seen.clear();
 		if (ctx.mode === "tui") ctx.ui.setStatus("codex-accounts", undefined);
 	});
 	// A new user task gets a fresh bounded failover episode. Automatic continuations
@@ -803,14 +820,15 @@ export default function registerCodexAccounts(pi: ExtensionAPI): void {
 		live.pending = undefined; live.blocked.clear(); live.attempted.clear(); live.seen.clear();
 	});
 	pi.on("turn_end", async (event, ctx) => {
-		if (!live.preferences.auto || !live.activeId || !ctx.model || ctx.model.provider !== PI_CANONICAL || event.message.role !== "assistant" || event.message.provider !== PI_CANONICAL || event.message.stopReason !== "error" || !quotaError(event.message.errorMessage, live.lastCode) || live.seen.has(event.messageEntryId) || live.busy) return;
+		const quota = quotaByMessage.get(event.message);
+		if (!live.preferences.auto || !live.activeId || !ctx.model || ctx.model.provider !== PI_CANONICAL || event.message.role !== "assistant" || event.message.provider !== PI_CANONICAL || event.message.stopReason !== "error" || !quotaError(event.message.errorMessage, quota?.code) || live.seen.has(event.messageEntryId) || live.busy) return;
 		live.seen.add(event.messageEntryId);
 		live.busy = true;
 		const generation = live.generation;
 		try {
 			const previous = live.activeId;
 			live.attempted.add(previous);
-			live.blocked.set(previous, `usage exhausted; reset ${live.lastResetAt ? new Date(live.lastResetAt).toISOString() : "unknown"}`);
+			live.blocked.set(previous, `usage exhausted; reset ${quota?.resetAt ? new Date(quota.resetAt).toISOString() : "unknown"}`);
 			const accounts = await readPiAccounts();
 			const known = new Map(accounts.map((a) => [a.id, a]));
 			live.pending = undefined;
