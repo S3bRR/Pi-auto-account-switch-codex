@@ -793,11 +793,15 @@ export default function registerCodexAccounts(pi: ExtensionAPI): void {
 							}
 							return response;
 						} });
-						const originalResult = stream.result.bind(stream);
-						stream.result = async () => {
-							const message = await originalResult();
-							quotaByMessage.set(message, quota);
-							return message;
+						// Pi forwards provider streams through lazy wrappers. Associate metadata
+						// before yielding the terminal event so turn_end cannot race result().
+						const originalIterator = stream[Symbol.asyncIterator].bind(stream);
+						stream[Symbol.asyncIterator] = async function* () {
+							for await (const event of { [Symbol.asyncIterator]: originalIterator }) {
+								if (event.type === "done") quotaByMessage.set(event.message, quota);
+								if (event.type === "error") quotaByMessage.set(event.error, quota);
+								yield event;
+							}
 						};
 						return stream;
 					},
