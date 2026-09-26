@@ -6,7 +6,7 @@
  * OpenCode's auth.json, and both harnesses keep independent selections.
  *
  * Commands:
- *   /accounts            List saved Codex accounts (active first)
+ *   /accounts            Configure priority, list, and select saved accounts
  *   /accounts <query>    Switch account by number, id, or email substring
  *   /accounts import     Copy OpenCode-saved accounts into Pi (never deletes)
  *   /accounts refresh    Proactively refresh the active account's tokens
@@ -16,20 +16,18 @@
  *   Pi auth:        ~/.pi/agent/auth.json
  *                     canonical key "openai-codex" (what the provider reads)
  *                     per-account keys "openai-codex/<accountId>"
- *   Pi selection:   ~/.pi/agent/codex-account.json  ({ accountId })
+ *   Pi selection:   ~/.pi/agent/codex-account.json  ({ accountId, order, auto })
  *
- * Credentials never leave their auth.json files, tokens are never logged,
- * OAuth binds only to localhost, and existing entries are never deleted.
+ * Tokens are never logged, and existing credential entries are never deleted.
+ * Login and refresh use Pi's native Codex OAuth implementation.
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { createServer, type Server } from "node:http";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import lockfile from "proper-lockfile";
 import { candidates, defaults, parsePreferences, quotaError, type Preferences } from "./failover.js";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { setTimeout as sleep } from "node:timers/promises";
 
 // ---------------------------------------------------------------------------
 // Paths & storage
@@ -232,178 +230,13 @@ async function updatePreferences(patch: Partial<Preferences>): Promise<Preferenc
 async function writeSelection(accountId: string): Promise<void> { await updatePreferences({ accountId }); }
 
 // ---------------------------------------------------------------------------
-// OAuth (adapted from src/oauth.ts — same public client & endpoints)
-// ---------------------------------------------------------------------------
-
-const CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
-const ISSUER = "https://auth.openai.com";
-const REDIRECT = "http://localhost:1455/auth/callback";
-
-export type Tokens = {
-	id_token?: string;
-	access_token: string;
-	refresh_token?: string;
-	expires_in?: number;
-};
-
-function withTimeout(parent: AbortSignal | undefined, ms: number): AbortSignal {
-	const timer = AbortSignal.timeout(ms);
-	return parent ? AbortSignal.any([parent, timer]) : timer;
-}
-
-async function post<T>(path: string, body: URLSearchParams | object, parent?: AbortSignal): Promise<T> {
-	const json = !(body instanceof URLSearchParams);
-	const response = await fetch(`${ISSUER}${path}`, {
-		method: "POST",
-		signal: withTimeout(parent, 30_000),
-		headers: { "Content-Type": json ? "application/json" : "application/x-www-form-urlencoded" },
-		body: json ? JSON.stringify(body) : body,
-	});
-	if (!response.ok) throw new Error(`OpenAI OAuth request failed (${response.status})`);
-	return response.json() as Promise<T>;
-}
-
-export function toCredential(tokens: Tokens, previous?: OAuthCredential): OAuthCredential {
-	const found = identity(tokens.id_token, tokens.access_token);
-	return {
-		type: "oauth",
-		access: tokens.access_token,
-		refresh: tokens.refresh_token ?? previous?.refresh ?? "",
-		expires: Date.now() + (tokens.expires_in ?? 3600) * 1000,
-		...(found.id ?? previous?.accountId ? { accountId: found.id ?? previous?.accountId } : {}),
-		...(previous?.enterpriseUrl && { enterpriseUrl: previous.enterpriseUrl }),
-	};
-}
-
-export function refreshTokens(refreshToken: string, parent?: AbortSignal): Promise<Tokens> {
-	return post<Tokens>("/oauth/token", new URLSearchParams({ grant_type: "refresh_token", refresh_token: refreshToken, client_id: CLIENT_ID }), parent);
-}
-
-async function pkce(): Promise<{ verifier: string; challenge: string }> {
-	const verifier = Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString("base64url");
-	const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier));
-	return { verifier, challenge: Buffer.from(digest).toString("base64url") };
-}
-
-function page(message: string): string {
-	return `<!doctype html><meta charset="utf-8"><title>Pi</title><body><h1>${message}</h1><p>You can close this window.</p>`;
-}
-
-export async function browserFlow(parent?: AbortSignal): Promise<{ url: string; tokens: Promise<Tokens>; cancel: (error?: Error) => void }> {
-	const codes = await pkce();
-	const state = Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString("base64url");
-	let server: Server;
-	let cancel!: (error?: Error) => void;
-	const tokens = new Promise<Tokens>((resolve, fail) => {
-		let settled = false;
-		const finish = (action: () => void) => {
-			if (settled) return;
-			settled = true;
-			clearTimeout(timer);
-			server?.close();
-			action();
-		};
-		const timer = setTimeout(() => finish(() => fail(new Error("Authentication timed out"))), 5 * 60_000);
-		cancel = (error = new Error("Authentication cancelled")) => finish(() => fail(error));
-		server = createServer(async (request, response) => {
-			const url = new URL(request.url ?? "/", REDIRECT);
-			if (url.pathname !== "/auth/callback") return void response.writeHead(404).end();
-			if (url.searchParams.get("state") !== state) return void response.writeHead(400).end(page("Invalid OAuth state"));
-			const error = url.searchParams.get("error_description") ?? url.searchParams.get("error");
-			const code = url.searchParams.get("code");
-			if (error || !code) {
-				response.writeHead(400).end(page("Authentication failed"));
-				return cancel(new Error(error ?? "Missing authorization code"));
-			}
-			try {
-				const result = await post<Tokens>(
-					"/oauth/token",
-					new URLSearchParams({
-						grant_type: "authorization_code",
-						code,
-						redirect_uri: REDIRECT,
-						client_id: CLIENT_ID,
-						code_verifier: codes.verifier,
-					}),
-					parent,
-				);
-				response.writeHead(200).end(page("Authentication complete"));
-				finish(() => resolve(result));
-			} catch (cause) {
-				response.writeHead(500).end(page("Authentication failed"));
-				cancel(cause instanceof Error ? cause : new Error("Token exchange failed"));
-			}
-		});
-	});
-	void tokens.catch(() => {});
-	try {
-		await new Promise<void>((resolve, fail) =>
-			server!.once("error", fail).listen(1455, "localhost", resolve),
-		);
-	} catch (cause) {
-		throw new Error(
-			`Unable to listen on localhost:1455 for the OAuth callback (${cause instanceof Error ? cause.message : String(cause)}). Close anything using that port and retry, or use /connect device.`,
-		);
-	}
-	parent?.addEventListener("abort", () => cancel(), { once: true });
-	if (parent?.aborted) cancel();
-	const query = new URLSearchParams({
-		response_type: "code",
-		client_id: CLIENT_ID,
-		redirect_uri: REDIRECT,
-		scope: "openid profile email offline_access",
-		code_challenge: codes.challenge,
-		code_challenge_method: "S256",
-		id_token_add_organizations: "true",
-		codex_cli_simplified_flow: "true",
-		state,
-		originator: "opencode",
-	});
-	return { url: `${ISSUER}/oauth/authorize?${query}`, tokens, cancel };
-}
-
-export async function deviceFlow(parent?: AbortSignal): Promise<{ url: string; instructions: string; tokens: () => Promise<Tokens> }> {
-	const challenge = await post<{ device_auth_id: string; user_code: string; interval: string }>("/api/accounts/deviceauth/usercode", { client_id: CLIENT_ID }, parent);
-	return {
-		url: `${ISSUER}/codex/device`,
-		instructions: `Enter code: ${challenge.user_code}`,
-		async tokens() {
-			const expires = Date.now() + 15 * 60_000;
-			while (Date.now() < expires) {
-				const response = await fetch(`${ISSUER}/api/accounts/deviceauth/token`, {
-					method: "POST",
-					signal: withTimeout(parent, 30_000),
-					headers: { "Content-Type": "application/json" },
-					body: JSON.stringify({ device_auth_id: challenge.device_auth_id, user_code: challenge.user_code }),
-				});
-				if (response.ok) {
-					const code = (await response.json()) as { authorization_code: string; code_verifier: string };
-					return post<Tokens>(
-						"/oauth/token",
-						new URLSearchParams({
-							grant_type: "authorization_code",
-							code: code.authorization_code,
-							redirect_uri: `${ISSUER}/deviceauth/callback`,
-							client_id: CLIENT_ID,
-							code_verifier: code.code_verifier,
-						}),
-						parent,
-					);
-				}
-				if (response.status !== 403 && response.status !== 404) throw new Error(`Device authorization failed (${response.status})`);
-				await sleep(Math.max(Number(challenge.interval) || 5, 1) * 1000);
-			}
-			throw new Error("Device authorization timed out");
-		},
-	};
-}
-
-// ---------------------------------------------------------------------------
 // Mutations (never delete credentials)
 // ---------------------------------------------------------------------------
 
 function accountId(auth: OAuthCredential): string | undefined { return auth.accountId ?? identity(auth.access).id; }
-let supportedRefresh: ((auth: OAuthCredential, signal: AbortSignal) => Promise<OAuthCredential>) | undefined;
+type NativeOAuth = NonNullable<NonNullable<ReturnType<ExtensionContext["modelRegistry"]["getProvider"]>>["auth"]["oauth"]>;
+let supportedRefresh: NativeOAuth["refresh"] | undefined;
+let supportedLogin: NativeOAuth["login"] | undefined;
 
 async function selectAccount(id: string, updateDefault = true): Promise<OAuthCredential> {
 	const next = await authTransaction(async (all) => {
@@ -415,10 +248,8 @@ async function selectAccount(id: string, updateDefault = true): Promise<OAuthCre
 		// Pi may have rotated the canonical credential since our last switch. Never regress its token.
 		if (canonical && accountId(canonical) === id && canonical.expires > auth.expires) auth = canonical;
 		if (auth.expires <= Date.now() + 5 * 60_000) {
-			if (!auth.refresh) throw new Error(`Account ${id} needs reauthentication`);
-			const refreshed = supportedRefresh
-				? await supportedRefresh(auth, AbortSignal.timeout(15_000))
-				: toCredential(await refreshTokens(auth.refresh, AbortSignal.timeout(15_000)), auth);
+			if (!auth.refresh || !supportedRefresh) throw new Error(`Account ${id} needs reauthentication`);
+			const refreshed = await supportedRefresh(auth, AbortSignal.timeout(15_000));
 			if (accountId(refreshed) !== id || (identity(refreshed.access).id && identity(refreshed.access).id !== id)) throw new Error(`Refresh changed account identity for ${id}; reauthenticate`);
 			auth = refreshed;
 		}
@@ -457,18 +288,12 @@ async function saveAccount(auth: OAuthCredential): Promise<OAuthCredential> {
 	return auth;
 }
 
-async function ensureFresh(auth: OAuthCredential): Promise<OAuthCredential> {
-	const id = accountId(auth);
-	if (!id) throw new Error("Account has no stable ID");
-	return selectAccount(id, false);
-}
-
 // ---------------------------------------------------------------------------
 // Presentation
 // ---------------------------------------------------------------------------
 
-function describeAccount(account: CodexAccount, index: number, selectedId?: string, activeId?: string): string {
-	const current = account.id === (selectedId ?? activeId);
+function describeAccount(account: CodexAccount, index: number, activeId?: string): string {
+	const current = account.id === activeId;
 	const stale = account.auth.expires <= Date.now() ? " (tokens expired — will refresh on switch)" : "";
 	return `${index + 1}. ${account.label}${current ? "  [active]" : ""}\n   id: ${account.id}${stale}`;
 }
@@ -482,8 +307,22 @@ function reply(ctx: ExtensionContext, text: string): void {
 // Local session state and interactive controls
 // ---------------------------------------------------------------------------
 
-type Live = { activeId?: string; activeAuth?: OAuthCredential; preferences: Preferences; blocked: Map<string, string>; attempted: Set<string>; seen: Set<string>; pending?: string; generation: number; busy: boolean; switchChain: Promise<void> };
+type Live = { activeId?: string; activeAuth?: OAuthCredential; preferences: Preferences; blocked: Map<string, string>; attempted: Set<string>; seen: Set<string>; pending?: string; loginAbort?: AbortController; generation: number; busy: boolean; switchChain: Promise<void> };
 type RequestQuota = { code?: string; resetAt?: number };
+
+async function responseQuota(response: Response): Promise<RequestQuota> {
+	if (response.ok) return {};
+	try {
+		const text = await response.clone().text();
+		if (text.length > 32_768) return {};
+		const error = (JSON.parse(text) as { error?: { code?: unknown; type?: unknown; resets_at?: unknown } }).error;
+		const codes = [error?.code, error?.type].filter((value): value is string => typeof value === "string").map((value) => value.toLowerCase());
+		const code = codes.includes("usage_limit_reached") ? "usage_limit_reached" : codes[0];
+		const rawReset = Number(error?.resets_at);
+		const resetAt = rawReset > 1e12 ? rawReset : rawReset * 1000;
+		return { ...(code && { code }), ...(Number.isFinite(resetAt) && resetAt > Date.now() && { resetAt }) };
+	} catch { return {}; }
+}
 
 async function switchLive(live: Live, id: string, generation: number): Promise<boolean> {
 	const previous = live.switchChain;
@@ -601,7 +440,7 @@ async function handleAccounts(ctx: ExtensionContext, args: string, live: Live): 
 				return;
 			}
 		}
-		reply(ctx, `Codex accounts\n\n${accounts.map((account, index) => describeAccount(account, index, live.activeId, live.activeId)).join("\n")}\n\nSwitch with: /accounts <number|id|email>`);
+		reply(ctx, `Codex accounts\n\n${accounts.map((account, index) => describeAccount(account, index, live.activeId)).join("\n")}\n\nSwitch with: /accounts <number|id|email>`);
 		return;
 	}
 
@@ -662,7 +501,9 @@ async function handleAccounts(ctx: ExtensionContext, args: string, live: Live): 
 				reply(ctx, "Refresh: no saved accounts. Use /connect first.");
 				return;
 			}
-			await ensureFresh(current.auth);
+			const id = accountId(current.auth);
+			if (!id) throw new Error("Account has no stable ID");
+			await selectAccount(id, false);
 			reply(ctx, `Refreshed tokens for ${current.label}.`);
 		} catch (cause) {
 			ctx.ui.notify(`Refresh failed: ${cause instanceof Error ? cause.message : String(cause)}`, "error");
@@ -677,8 +518,6 @@ async function handleAccounts(ctx: ExtensionContext, args: string, live: Live): 
 			reply(ctx, "No saved accounts. Use /connect to add one, or /accounts import to copy accounts saved in OpenCode.");
 			return;
 		}
-		const selected = live.activeId;
-		const activeId = live.activeId;
 		const query = trimmed.toLowerCase();
 		const byIndex = /^\d+$/.test(query) ? accounts[Number(query) - 1] : undefined;
 		const exact = accounts.filter((account) => account.id.toLowerCase() === query);
@@ -688,7 +527,7 @@ async function handleAccounts(ctx: ExtensionContext, args: string, live: Live): 
 		if (!target) {
 			reply(
 				ctx,
-				`No account matches "${trimmed}".\n\n${accounts.map((account, index) => describeAccount(account, index, selected, activeId)).join("\n")}`,
+				`No account matches "${trimmed}".\n\n${accounts.map((account, index) => describeAccount(account, index, live.activeId)).join("\n")}`,
 			);
 			return;
 		}
@@ -700,32 +539,50 @@ async function handleAccounts(ctx: ExtensionContext, args: string, live: Live): 
 
 async function handleConnect(ctx: ExtensionContext, args: string, live: Live): Promise<void> {
 	const mode = args.trim().toLowerCase() || "browser";
-	if (mode !== "browser" && mode !== "device") {
-		ctx.ui.notify("Usage: /connect [browser|device]", "error");
+	if ((mode !== "browser" && mode !== "device") || !supportedLogin) {
+		ctx.ui.notify(supportedLogin ? "Usage: /connect [browser|device]" : "Native Codex login is unavailable", "error");
 		return;
 	}
+	if (live.busy) { ctx.ui.notify("A Codex account operation is already in progress", "warning"); return; }
 	live.generation++; live.pending = undefined; live.attempted.clear(); live.busy = true;
+	const controller = new AbortController();
+	live.loginAbort?.abort(); live.loginAbort = controller;
 	try {
-		if (mode === "device") {
-			const flow = await deviceFlow();
-			if (ctx.mode === "tui") ctx.ui.setWidget("codex-connect", [`Open: ${flow.url}`, flow.instructions, "Waiting up to 15 minutes…"]);
-			else reply(ctx, `Connect Codex account (headless): ${flow.url} — ${flow.instructions}`);
-			const auth = await saveAccount(toCredential(await flow.tokens()));
-			live.generation++; live.activeId = auth.accountId; live.pending = undefined; live.attempted.clear();
-			showStatus(ctx, live, await readPiAccounts());
-			ctx.ui.notify(`Connected account ${auth.accountId} in this session. Add it to /accounts order to include it in automatic failover.`, "info");
-			return;
-		}
-		const flow = await browserFlow();
-		if (ctx.mode === "tui") ctx.ui.setWidget("codex-connect", [`Open this URL to connect:`, flow.url, "Waiting up to 5 minutes…"]);
-		else reply(ctx, `Connect Codex account: ${flow.url}`);
-		const auth = await saveAccount(toCredential(await flow.tokens));
-		live.generation++; live.activeId = auth.accountId; live.pending = undefined; live.attempted.clear();
+		const signal = ctx.signal ? AbortSignal.any([ctx.signal, controller.signal]) : controller.signal;
+		const result = await supportedLogin({
+			signal,
+			prompt: async (prompt) => {
+				if (prompt.type === "select") {
+					if (prompt.message.includes("Codex login method")) return mode === "device" ? "device_code" : "browser";
+					const labels = prompt.options.map((option) => option.description ? `${option.label} — ${option.description}` : option.label);
+					const choice = await ctx.ui.select(prompt.message, labels, { signal: prompt.signal });
+					if (!choice) throw new Error("Login cancelled");
+					return prompt.options[labels.indexOf(choice)]!.id;
+				}
+				const value = await ctx.ui.input(prompt.message, prompt.placeholder, { signal: prompt.signal });
+				if (value === undefined) throw new Error("Login cancelled");
+				return value;
+			},
+			notify: (event) => {
+				const lines = event.type === "auth_url" ? [event.instructions ?? "Open this URL to authenticate:", event.url]
+					: event.type === "device_code" ? [`Open: ${event.verificationUri}`, `Enter code: ${event.userCode}`]
+					: event.type === "info" ? [event.message, ...(event.links ?? []).map((link) => `${link.label ?? "Open"}: ${link.url}`)]
+					: [event.message];
+				if (ctx.mode === "tui") ctx.ui.setWidget("codex-connect", lines);
+				else reply(ctx, lines.join(" — "));
+			},
+		});
+		const auth = credential(result);
+		if (!auth) throw new Error("Native Codex login returned invalid credentials");
+		await saveAccount(auth);
+		live.generation++; live.activeId = auth.accountId; live.activeAuth = auth; live.pending = undefined; live.attempted.clear();
 		showStatus(ctx, live, await readPiAccounts());
 		ctx.ui.notify(`Connected account ${auth.accountId} in this session. Add it to /accounts order to include it in automatic failover.`, "info");
 	} catch (cause) {
 		ctx.ui.notify(`Connect failed: ${cause instanceof Error ? cause.message : String(cause)}`, "error");
 	} finally {
+		controller.abort();
+		if (live.loginAbort === controller) live.loginAbort = undefined;
 		live.busy = false;
 		if (ctx.mode === "tui") ctx.ui.setWidget("codex-connect", undefined);
 	}
@@ -745,7 +602,10 @@ export default function registerCodexAccounts(pi: ExtensionAPI): void {
 			const accounts = await readPiAccounts();
 			const native = ctx.modelRegistry.getProvider(PI_CANONICAL);
 			if (!native?.auth.oauth) throw new Error("Installed Pi does not expose the native Codex OAuth provider");
-			if (!providerInstalled) supportedRefresh = native.auth.oauth.refresh;
+			if (!providerInstalled) {
+				supportedRefresh = native.auth.oauth.refresh;
+				supportedLogin = native.auth.oauth.login;
+			}
 			// A process launch begins at priority #1. Reload/navigation keeps the current selection.
 			if (event.reason === "startup" && live.preferences.auto) await startFirst(live, accounts);
 			live.activeId ??= live.preferences.accountId && accounts.some((a) => a.id === live.preferences.accountId)
@@ -779,18 +639,8 @@ export default function registerCodexAccounts(pi: ExtensionAPI): void {
 							const headerAccountId = new Headers(init?.headers).get("chatgpt-account-id");
 							if (requestAccountId && headerAccountId !== requestAccountId) throw new Error("Codex request account header does not match the selected account");
 							const response = await (options?.fetch ?? fetch)(input, init);
-							if (response.status === 429) {
-								try {
-									const text = await response.clone().text();
-									if (text.length <= 32_768) {
-										const error = (JSON.parse(text) as { error?: { code?: unknown; type?: unknown; resets_at?: unknown } }).error;
-										const code = error?.code ?? error?.type;
-										if (typeof code === "string") quota.code = code;
-										const resetSeconds = typeof error?.resets_at === "number" || typeof error?.resets_at === "string" ? Number(error.resets_at) : NaN;
-										if (Number.isFinite(resetSeconds) && resetSeconds * 1000 > Date.now()) quota.resetAt = resetSeconds * 1000;
-									}
-								} catch { /* Unknown error body: fall back to bounded final-message detection. */ }
-							}
+							delete quota.code; delete quota.resetAt;
+							Object.assign(quota, await responseQuota(response));
 							return response;
 						} });
 						// Pi forwards provider streams through lazy wrappers. Associate metadata
@@ -815,6 +665,7 @@ export default function registerCodexAccounts(pi: ExtensionAPI): void {
 		} catch (cause) { ctx.ui.notify(`Codex setup failed: ${cause instanceof Error ? cause.message : String(cause)}`, "error"); }
 	});
 	pi.on("session_shutdown", (_event, ctx) => {
+		live.loginAbort?.abort(); live.loginAbort = undefined;
 		live.generation++; live.activeAuth = undefined; live.pending = undefined; live.attempted.clear(); live.seen.clear();
 		if (ctx.mode === "tui") ctx.ui.setStatus("codex-accounts", undefined);
 	});
